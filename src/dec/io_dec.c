@@ -515,6 +515,112 @@ static int EmitRescaledAlphaRGB(const VP8Io* const io, WebPDecParams* const p,
   return 0;
 }
 
+//------------------------------------------------------------------------------
+// RGBA-space rescaling (options->rgba_scaling): the samples are fully
+// decoded and converted to RGB first (exactly as an unscaled decode), then
+// rescaled on their way to the output buffer. The result is identical to
+// decoding at full size and rescaling the RGBA samples with WebPRescaler.
+
+WEBP_NODISCARD static int InitRGBARescaler(const VP8Io* const io,
+                                           WebPDecParams* const p) {
+  const WEBP_CSP_MODE colorspace = p->output->colorspace;
+  const int has_alpha = WebPIsAlphaMode(colorspace);
+  const int bpp = (colorspace == MODE_RGB || colorspace == MODE_BGR) ? 3 : 4;
+  const int in_width = io->mb_w;
+  const int in_height = io->mb_h;
+  const int out_width = io->scaled_width;
+  const int out_height = io->scaled_height;
+  const WebPRGBABuffer* const buf = &p->output->u.RGBA;
+  const int tmp_stride = bpp * in_width;
+  // Maximum number of rows emitted per io->put call: one macroblock
+  // (16 rows) plus up to kFilterExtraRows[2] (8) extra rows held back by
+  // the loop filter, plus one spare row for the fancy upsampler's
+  // look-behind.
+  const int num_tmp_rows = 16 + 8 + 1;
+  const uint64_t work_size_bytes = WebPRescalerWorkSize(
+      in_width, in_height, out_width, out_height, bpp);
+  const uint64_t rescaler_size = sizeof(*p->scaler_y) + WEBP_ALIGN_CST;
+  const uint64_t tmp_size = (uint64_t)num_tmp_rows * tmp_stride;
+  const int uv_width = (io->mb_w + 1) >> 1;
+  const uint64_t fancy_size =
+      io->fancy_upsampling ? (uint64_t)(io->mb_w + 2 * uv_width) : 0;
+  const uint64_t total_size = work_size_bytes + WEBP_ALIGN_CST +
+                              rescaler_size + WEBP_ALIGN_CST + tmp_size +
+                              fancy_size;
+  uint8_t* mem;
+  rescaler_t* work;
+  if (!CheckSizeOverflow(total_size)) {
+    return 0;
+  }
+  mem = (uint8_t*)WebPSafeMalloc(1ULL, (size_t)total_size);
+  if (mem == NULL) {
+    return 0;  // memory error
+  }
+  p->memory = mem;
+  work = (rescaler_t*)WEBP_ALIGN(mem);
+  p->scaler_y =
+      (WebPRescaler*)WEBP_ALIGN(mem + work_size_bytes + WEBP_ALIGN_CST);
+  p->tmp_rgba = (uint8_t*)p->scaler_y + rescaler_size;
+  p->tmp_stride = tmp_stride;
+  if (!WebPRescalerInit(p->scaler_y, in_width, in_height, buf->rgba, out_width,
+                        out_height, buf->stride, bpp, work)) {
+    return 0;
+  }
+  // Set up the full-resolution emitters, exactly as an unscaled decode.
+  WebPInitSamplers();
+  p->emit = EmitSampledRGB;  // default
+  if (io->fancy_upsampling) {
+#ifdef FANCY_UPSAMPLING
+    p->tmp_y = p->tmp_rgba + tmp_size;
+    p->tmp_u = p->tmp_y + io->mb_w;
+    p->tmp_v = p->tmp_u + uv_width;
+    p->emit = EmitFancyRGB;
+    WebPInitUpsamplers();
+#endif
+  }
+  if (has_alpha) {  // need transparency output
+    p->emit_alpha = EmitAlphaRGB;
+    WebPInitAlphaProcessing();
+  }
+  return 1;
+}
+
+static int CustomPutRescaledRGBA(const VP8Io* const io, WebPDecParams* const p) {
+  WebPRGBABuffer* const buf = &p->output->u.RGBA;
+  uint8_t* const saved_rgba = buf->rgba;
+  const int saved_stride = buf->stride;
+  const int tmp_stride = p->tmp_stride;
+  int num_lines_in;
+  int lines_left;
+  const uint8_t* src;
+
+  // Redirect the emission to the temporary full-resolution rows. Absolute
+  // row 'r' of the (cropped) picture lands at
+  // tmp_rgba + (r + 1 - io->mb_y) * tmp_stride, leaving one spare row for
+  // the fancy upsampler's look-behind.
+  buf->rgba = p->tmp_rgba + (ptrdiff_t)(1 - io->mb_y) * tmp_stride;
+  buf->stride = tmp_stride;
+  num_lines_in = p->emit(io, p);
+  if (p->emit_alpha != NULL) {
+    p->emit_alpha(io, p, num_lines_in);
+  }
+  buf->rgba = saved_rgba;
+  buf->stride = saved_stride;
+
+  // Rescale the freshly completed rows into the output buffer.
+  src = p->tmp_rgba + (ptrdiff_t)(p->last_y + 1 - io->mb_y) * tmp_stride;
+  lines_left = num_lines_in;
+  while (lines_left > 0) {
+    const int imported =
+        WebPRescalerImport(p->scaler_y, lines_left, src, tmp_stride);
+    src += (ptrdiff_t)imported * tmp_stride;
+    lines_left -= imported;
+    WebPRescalerExport(p->scaler_y);
+  }
+  p->last_y += num_lines_in;
+  return 1;
+}
+
 WEBP_NODISCARD static int InitRGBRescaler(const VP8Io* const io,
                                           WebPDecParams* const p) {
   const int has_alpha = WebPIsAlphaMode(p->output->colorspace);
@@ -618,6 +724,7 @@ WEBP_NODISCARD static int CustomSetup(VP8Io* io) {
   p->emit = NULL;
   p->emit_alpha = NULL;
   p->emit_alpha_row = NULL;
+  p->tmp_rgba = NULL;
   // Note: WebPIoInitFromOptions() does not distinguish between MODE_YUV and
   // MODE_YUVA, only RGB vs YUV.
   if (!WebPIoInitFromOptions(p->options, io, /*src_colorspace=*/MODE_YUV)) {
@@ -628,7 +735,10 @@ WEBP_NODISCARD static int CustomSetup(VP8Io* io) {
   }
   if (io->use_scaling) {
 #if !defined(WEBP_REDUCE_SIZE)
-    const int ok = is_rgb ? InitRGBRescaler(io, p) : InitYUVRescaler(io, p);
+    const int ok = WebPUseRGBAScaling(p->options, colorspace)
+                       ? InitRGBARescaler(io, p)
+                       : is_rgb ? InitRGBRescaler(io, p)
+                                : InitYUVRescaler(io, p);
     if (!ok) {
       WebPSafeFree(p->memory);
       p->memory = NULL;
@@ -687,6 +797,11 @@ WEBP_NODISCARD static int CustomPut(const VP8Io* io) {
   if (mb_w <= 0 || mb_h <= 0) {
     return 0;
   }
+#if !defined(WEBP_REDUCE_SIZE)
+  if (p->tmp_rgba != NULL) {  // RGBA-space rescaling is in use.
+    return CustomPutRescaledRGBA(io, p);
+  }
+#endif  // WEBP_REDUCE_SIZE
   num_lines_out = p->emit(io, p);
   if (p->emit_alpha != NULL) {
     p->emit_alpha(io, p, num_lines_out);

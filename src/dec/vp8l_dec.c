@@ -658,8 +658,9 @@ WEBP_NODISCARD static int AllocateAndInitRescaler(VP8LDecoder* const dec,
 #if !defined(WEBP_REDUCE_SIZE)
 
 // We have special "export" function since we need to convert from BGRA
-static int Export(WebPRescaler* const rescaler, WEBP_CSP_MODE colorspace,
-                  int rgba_stride, uint8_t* const rgba) {
+static int Export(WebPRescaler* const rescaler, int rgba_scaling,
+                  WEBP_CSP_MODE colorspace, int rgba_stride,
+                  uint8_t* const rgba) {
   uint32_t* const src = (uint32_t*)rescaler->dst;
   uint8_t* dst = rgba;
   const int dst_width = rescaler->dst_width;
@@ -667,7 +668,9 @@ static int Export(WebPRescaler* const rescaler, WEBP_CSP_MODE colorspace,
   assert(WEBP_IS_ALIGNED(src, uint32_t));
   while (WebPRescalerHasPendingOutput(rescaler)) {
     WebPRescalerExportRow(rescaler);
-    WebPMultARGBRow(src, dst_width, 1);
+    if (!rgba_scaling) {
+      WebPMultARGBRow(src, dst_width, 1);
+    }
     VP8LConvertFromBGRA(src, dst_width, colorspace, dst);
     dst += rgba_stride;
     ++num_lines_out;
@@ -680,6 +683,11 @@ static int EmitRescaledRowsRGBA(const VP8LDecoder* const dec, uint8_t* in,
                                 int in_stride, int mb_h, uint8_t* const out,
                                 int out_stride) {
   const WEBP_CSP_MODE colorspace = dec->output->colorspace;
+  // With RGBA-space rescaling, the samples are rescaled as-is (without the
+  // premultiply/unpremultiply round-trip), so that the output matches a
+  // full-size decode rescaled with WebPRescaler.
+  const WebPDecParams* const params = (const WebPDecParams*)dec->io->opaque;
+  const int rgba_scaling = WebPUseRGBAScaling(params->options, colorspace);
   int num_lines_in = 0;
   int num_lines_out = 0;
   while (num_lines_in < mb_h) {
@@ -689,13 +697,16 @@ static int EmitRescaledRowsRGBA(const VP8LDecoder* const dec, uint8_t* in,
     const int needed_lines = WebPRescaleNeededLines(dec->rescaler, lines_left);
     int lines_imported;
     assert(needed_lines > 0 && needed_lines <= lines_left);
-    WebPMultARGBRows(row_in, in_stride, dec->rescaler->src_width, needed_lines,
-                     0);
+    if (!rgba_scaling) {
+      WebPMultARGBRows(row_in, in_stride, dec->rescaler->src_width,
+                       needed_lines, 0);
+    }
     lines_imported =
         WebPRescalerImport(dec->rescaler, lines_left, row_in, in_stride);
     assert(lines_imported == needed_lines);
     num_lines_in += lines_imported;
-    num_lines_out += Export(dec->rescaler, colorspace, out_stride, row_out);
+    num_lines_out +=
+        Export(dec->rescaler, rgba_scaling, colorspace, out_stride, row_out);
   }
   return num_lines_out;
 }

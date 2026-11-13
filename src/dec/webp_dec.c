@@ -702,6 +702,45 @@ uint8_t* WebPDecodeBGRA(const uint8_t* WEBP_COUNTED_BY(data_size) data,
   return Decode(MODE_BGRA, data, data_size, width, height, NULL);
 }
 
+WEBP_NODISCARD static uint8_t* DecodeDownsampled(
+    WEBP_CSP_MODE mode,
+    const uint8_t* WEBP_COUNTED_BY(data_size) const data, size_t data_size,
+    int* const width, int* const height, int factor) {
+  WebPDecoderConfig config;
+  if (factor < 1 || !WebPInitDecoderConfig(&config)) {
+    return NULL;
+  }
+  if (WebPGetFeatures(data, data_size, &config.input) != VP8_STATUS_OK) {
+    return NULL;
+  }
+  config.output.colorspace = mode;
+  config.options.use_scaling = 1;
+  config.options.rgba_scaling = 1;
+  config.options.scaled_width = (config.input.width + factor - 1) / factor;
+  config.options.scaled_height = (config.input.height + factor - 1) / factor;
+  if (WebPDecode(data, data_size, &config) != VP8_STATUS_OK) {
+    WebPFreeDecBuffer(&config.output);
+    return NULL;
+  }
+  if (width != NULL) *width = config.output.width;
+  if (height != NULL) *height = config.output.height;
+  return config.output.u.RGBA.rgba;
+}
+
+uint8_t* WebPDecodeRGBADownsampled(const uint8_t* WEBP_COUNTED_BY(data_size)
+                                       data,
+                                   size_t data_size, int* width, int* height,
+                                   int factor) {
+  return DecodeDownsampled(MODE_RGBA, data, data_size, width, height, factor);
+}
+
+uint8_t* WebPDecodeRGBDownsampled(const uint8_t* WEBP_COUNTED_BY(data_size)
+                                      data,
+                                  size_t data_size, int* width, int* height,
+                                  int factor) {
+  return DecodeDownsampled(MODE_RGB, data, data_size, width, height, factor);
+}
+
 uint8_t* WebPDecodeYUV(const uint8_t* WEBP_COUNTED_BY(data_size) data,
                        size_t data_size, int* width, int* height, uint8_t** u,
                        uint8_t** v, int* stride, int* uv_stride) {
@@ -811,6 +850,13 @@ int WebPValidateDecoderConfig(const WebPDecoderConfig* config) {
   if (options->use_scaling &&
       (options->scaled_width < 0 || options->scaled_height < 0 ||
        (options->scaled_width == 0 && options->scaled_height == 0))) {
+    return 0;
+  }
+  // RGBA-space scaling is only supported for the non-premultiplied 8-bit
+  // RGB colorspaces, for which the colorspace conversion commutes with
+  // rescaling (pure byte shuffling).
+  if (options->rgba_scaling &&
+      !WebPIsRGBAScalingMode(config->output.colorspace)) {
     return 0;
   }
 
@@ -962,9 +1008,13 @@ int WebPIoInitFromOptions(const WebPDecoderOptions* const options,
 
   if (io->use_scaling) {
     // disable filter (only for large downscaling ratio).
+    // ... unless scaling is performed in RGBA space, in which case the
+    // decoded samples must match a full-size decode exactly.
+    const int rgba_scaling = (options != NULL) && options->rgba_scaling;
     io->bypass_filtering |=
-        (io->scaled_width < W * 3 / 4) && (io->scaled_height < H * 3 / 4);
-    io->fancy_upsampling = 0;
+        !rgba_scaling && (io->scaled_width < W * 3 / 4) &&
+        (io->scaled_height < H * 3 / 4);
+    io->fancy_upsampling = rgba_scaling && io->fancy_upsampling;
   }
   return 1;
 }

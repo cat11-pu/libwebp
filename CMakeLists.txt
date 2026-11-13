@@ -655,6 +655,8 @@ if(WEBP_BUILD_EXTRAS)
   parse_makefile_am(${EXTRAS_MAKEFILE} "GET_DISTO_SRCS" "get_disto")
   parse_makefile_am(${EXTRAS_MAKEFILE} "WEBP_QUALITY_SRCS" "webp_quality")
   parse_makefile_am(${EXTRAS_MAKEFILE} "VWEBP_SDL_SRCS" "vwebp_sdl")
+  parse_makefile_am(${EXTRAS_MAKEFILE} "DOWNSAMPLE_CHECK_SRCS"
+                    "downsample_check")
 
   # libextras
   add_library(extras STATIC ${WEBP_EXTRAS_SRCS})
@@ -669,6 +671,13 @@ if(WEBP_BUILD_EXTRAS)
   add_executable(webp_quality ${WEBP_QUALITY_SRCS})
   target_link_libraries(webp_quality exampleutil imagedec extras)
   target_include_directories(webp_quality PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+
+  # downsample_check
+  add_executable(downsample_check ${DOWNSAMPLE_CHECK_SRCS})
+  target_link_libraries(downsample_check webp)
+  target_include_directories(
+    downsample_check PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}
+                             ${CMAKE_CURRENT_BINARY_DIR})
 
   # vwebp_sdl
   find_package(SDL2 QUIET)

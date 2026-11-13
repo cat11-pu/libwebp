@@ -15,6 +15,7 @@ libwebpextras_la_LIBADD = ../src/libwebp.la
 
 noinst_PROGRAMS =
 noinst_PROGRAMS += webp_quality
+noinst_PROGRAMS += downsample_check
 if BUILD_DEMUX
   noinst_PROGRAMS += get_disto
 endif
@@ -36,6 +37,11 @@ webp_quality_LDADD =
 webp_quality_LDADD += ../imageio/libimageio_util.la
 webp_quality_LDADD += libwebpextras.la
 webp_quality_LDADD += ../src/libwebp.la
+
+downsample_check_SOURCES  = downsample_check.c
+downsample_check_CPPFLAGS = $(AM_CPPFLAGS)
+downsample_check_LDADD =
+downsample_check_LDADD += ../src/libwebp.la
 
 vwebp_sdl_SOURCES  = vwebp_sdl.c webp_to_sdl.c webp_to_sdl.h
 vwebp_sdl_CPPFLAGS = $(AM_CPPFLAGS) $(SDL_INCLUDES)

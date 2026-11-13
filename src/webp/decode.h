@@ -86,6 +86,23 @@ WEBP_NODISCARD WEBP_EXTERN uint8_t* WebPDecodeBGR(
     const uint8_t* WEBP_COUNTED_BY(data_size) data, size_t data_size,
     int* width, int* height);
 
+// Downsampled decoding: decodes the image directly to 1/'factor' of its
+// original dimensions ('factor' must be >= 1; e.g. 2 for half size, 4 for
+// quarter size), without materializing the full-resolution RGBA output.
+// The output dimensions are (*width + factor - 1) / factor and
+// (*height + factor - 1) / factor.
+// The result is pixel-identical to decoding at full size with
+// WebPDecodeRGBA() (resp. WebPDecodeRGB()) and downscaling the samples to
+// the same dimensions with WebPRescaler (see src/utils/rescaler_utils.h).
+// The returned pointer should be deleted calling WebPFree().
+// Returns NULL in case of error (including factor < 1).
+WEBP_NODISCARD WEBP_EXTERN uint8_t* WebPDecodeRGBADownsampled(
+    const uint8_t* WEBP_COUNTED_BY(data_size) data, size_t data_size,
+    int* width, int* height, int factor);
+WEBP_NODISCARD WEBP_EXTERN uint8_t* WebPDecodeRGBDownsampled(
+    const uint8_t* WEBP_COUNTED_BY(data_size) data, size_t data_size,
+    int* width, int* height, int factor);
+
 // Decode WebP images pointed to by 'data' to Y'UV format(*). The pointer
 // returned is the Y samples buffer. Upon return, *u and *v will point to
 // the U and V chroma data. These U and V buffers need NOT be passed to
@@ -494,8 +511,16 @@ struct WebPDecoderOptions {
   int dithering_strength;           // dithering strength (0=Off, 100=full)
   int flip;                         // if true, flip output vertically
   int alpha_dithering_strength;     // alpha dithering strength in [0..100]
+  // If true (and use_scaling is also true), scaling is performed in RGBA
+  // space after YUV->RGB conversion, instead of in YUV space. The decoded
+  // pixels (loop filter, fancy upsampling) are then identical to a
+  // full-size decode, so the output is pixel-identical to decoding at
+  // full size and rescaling the RGBA samples with WebPRescaler.
+  // Only supported for the MODE_RGB, MODE_BGR, MODE_RGBA, MODE_BGRA and
+  // MODE_ARGB output colorspaces. Has no effect if use_scaling is false.
+  int rgba_scaling;
 
-  uint32_t pad[5];  // padding for later use
+  uint32_t pad[4];  // padding for later use
 };
 
 // Main object storing the configuration for advanced decoding.

@@ -51,6 +51,11 @@ struct WebPDecParams {
   WebPRescaler *scaler_y, *scaler_u, *scaler_v, *scaler_a;  // rescalers
   void* memory;  // overall scratch memory for the output work.
 
+  // Scratch full-resolution RGBA rows used when options->rgba_scaling is
+  // set: samples are emitted there first, then rescaled into 'output'.
+  uint8_t* tmp_rgba;  // NULL if RGBA-space rescaling is not in use.
+  int tmp_stride;     // stride (in bytes) of the 'tmp_rgba' rows.
+
   OutputFunc emit;               // output RGB or YUV samples
   OutputAlphaFunc emit_alpha;    // output alpha channel
   OutputRowFunc emit_alpha_row;  // output one line of rescaled alpha values
@@ -58,6 +63,22 @@ struct WebPDecParams {
 
 // Should be called first, before any use of the WebPDecParams object.
 void WebPResetDecParams(WebPDecParams* const params);
+
+// Returns true if 'mode' is compatible with RGBA-space rescaling (the
+// 'rgba_scaling' decoding option), i.e. the colorspace conversion is a
+// pure byte shuffling that commutes with rescaling.
+static WEBP_INLINE int WebPIsRGBAScalingMode(WEBP_CSP_MODE mode) {
+  return (mode == MODE_RGB || mode == MODE_BGR || mode == MODE_RGBA ||
+          mode == MODE_BGRA || mode == MODE_ARGB);
+}
+
+// Returns true if RGBA-space rescaling should be used for the given
+// decoding options and output colorspace.
+static WEBP_INLINE int WebPUseRGBAScaling(
+    const WebPDecoderOptions* const options, WEBP_CSP_MODE mode) {
+  return (options != NULL && options->rgba_scaling &&
+          WebPIsRGBAScalingMode(mode));
+}
 
 //------------------------------------------------------------------------------
 // Header parsing helpers
