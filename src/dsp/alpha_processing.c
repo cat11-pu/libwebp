@@ -378,6 +378,28 @@ static void AlphaReplace_C(uint32_t* src, int length, uint32_t color) {
   }
 }
 
+// Zero the color channels of every fully transparent pixel (alpha == 0) in an
+// 8-bit RGBA/BGRA/ARGB buffer. 'alpha_first' is 1 when the alpha channel is
+// the first byte of each pixel (ARGB), 0 when it is the last (RGBA/BGRA).
+static void ClearTransparentRGB_C(uint8_t* rgba, int alpha_first, int width,
+                                  int height, int stride) {
+  const int alpha_offset = alpha_first ? 0 : 3;
+  const int color_offset = alpha_first ? 1 : 0;
+  int y;
+  for (y = 0; y < height; ++y) {
+    int x;
+    for (x = 0; x < width; ++x) {
+      uint8_t* const pixel = rgba + 4 * x;
+      if (pixel[alpha_offset] == 0) {
+        pixel[color_offset] = 0;
+        pixel[color_offset + 1] = 0;
+        pixel[color_offset + 2] = 0;
+      }
+    }
+    rgba += stride;
+  }
+}
+
 //------------------------------------------------------------------------------
 // Simple channel manipulations.
 
@@ -410,6 +432,7 @@ static void PackRGB_C(const uint8_t* WEBP_RESTRICT r,
 }
 
 void (*WebPApplyAlphaMultiply)(uint8_t*, int, int, int, int);
+void (*WebPClearTransparentRGB)(uint8_t*, int, int, int, int);
 void (*WebPApplyAlphaMultiply4444)(uint8_t*, int, int, int);
 int (*WebPDispatchAlpha)(const uint8_t* WEBP_RESTRICT, int, int, int,
                          uint8_t* WEBP_RESTRICT, int);
@@ -461,6 +484,7 @@ WEBP_DSP_INIT_FUNC(WebPInitAlphaProcessing) {
   WebPHasAlpha8b = HasAlpha8b_C;
   WebPHasAlpha32b = HasAlpha32b_C;
   WebPAlphaReplace = AlphaReplace_C;
+  WebPClearTransparentRGB = ClearTransparentRGB_C;
 
   // If defined, use CPUInfo() to overwrite some pointers with faster versions.
   if (VP8GetCPUInfo != NULL) {

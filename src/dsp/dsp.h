@@ -439,6 +439,12 @@ void WebPRescalerDspInit(void);
 extern void (*WebPApplyAlphaMultiply)(uint8_t* rgba, int alpha_first, int w,
                                       int h, int stride);
 
+// Zero the color channels of fully transparent pixels (alpha == 0) on an
+// rgba, bgra or argb plane of size w * h. alpha_first should be 1 for argb
+// (where alpha is first), 0 for rgba or bgra (where alpha is last).
+extern void (*WebPClearTransparentRGB)(uint8_t* rgba, int alpha_first, int w,
+                                       int h, int stride);
+
 // Same, buf specifically for RGBA4444 format
 extern void (*WebPApplyAlphaMultiply4444)(uint8_t* rgba4444, int w, int h,
                                           int stride);

@@ -200,6 +200,13 @@ static int EmitAlphaRGB(const VP8Io* const io, WebPDecParams* const p,
     if (has_alpha && WebPIsPremultipliedMode(colorspace)) {
       WebPApplyAlphaMultiply(base_rgba, alpha_first, mb_w, num_rows,
                              buf->stride);
+    } else if (has_alpha) {
+      // Straight-alpha output: the color channels of fully transparent pixels
+      // carry no meaning and may contain stale YUV->RGB values (including
+      // black edges after blending). Zero them so transparent pixels are
+      // transparent black.
+      WebPClearTransparentRGB(base_rgba, alpha_first, mb_w, num_rows,
+                              buf->stride);
     }
   }
   return 0;
@@ -458,6 +465,10 @@ static int ExportAlpha(WebPDecParams* const p, int y_pos, int max_lines_out) {
   if (is_premult_alpha && non_opaque) {
     WebPApplyAlphaMultiply(base_rgba, alpha_first, width, num_lines_out,
                            buf->stride);
+  } else if (non_opaque) {
+    // Straight-alpha output: make fully transparent pixels transparent black.
+    WebPClearTransparentRGB(base_rgba, alpha_first, width, num_lines_out,
+                            buf->stride);
   }
   return num_lines_out;
 }

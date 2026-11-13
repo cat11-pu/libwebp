@@ -258,6 +258,39 @@ static void ApplyAlphaMultiply_SSE2(uint8_t* rgba, int alpha_first, int w,
     rgba += stride;
   }
 }
+
+static void ClearTransparentRGB_SSE2(uint8_t* rgba, int alpha_first, int w,
+                                     int h, int stride) {
+  const __m128i zero = _mm_setzero_si128();
+  const int kSpan = 4;
+  while (h-- > 0) {
+    int i;
+    for (i = 0; i + kSpan <= w; i += kSpan) {
+      __m128i* const src = (__m128i*)(rgba + 4 * i);
+      const __m128i v = _mm_loadu_si128(src);
+      // Sign-extend the alpha byte of each 32-bit pixel into the whole lane.
+      // Alpha is the top byte for RGBA/BGRA and the low byte for ARGB.
+      const __m128i a =
+          alpha_first ? _mm_srai_epi32(_mm_slli_epi32(v, 24), 24)
+                      : _mm_srai_epi32(v, 24);
+      const __m128i transparent = _mm_cmpeq_epi32(a, zero);
+      // Keep the pixel as-is where alpha is non-zero, clear all bytes where
+      // the pixel is fully transparent (the alpha byte is already 0).
+      _mm_storeu_si128(src, _mm_andnot_si128(transparent, v));
+    }
+    for (; i < w; ++i) {
+      uint8_t* const pixel = rgba + 4 * i;
+      const int alpha_offset = alpha_first ? 0 : 3;
+      const int color_offset = alpha_first ? 1 : 0;
+      if (pixel[alpha_offset] == 0) {
+        pixel[color_offset] = 0;
+        pixel[color_offset + 1] = 0;
+        pixel[color_offset + 2] = 0;
+      }
+    }
+    rgba += stride;
+  }
+}
 #undef MULTIPLIER
 #undef PREMULTIPLY
 
@@ -407,6 +440,7 @@ WEBP_TSAN_IGNORE_FUNCTION void WebPInitAlphaProcessingSSE2(void) {
   WebPMultARGBRow = MultARGBRow_SSE2;
   WebPMultRow = MultRow_SSE2;
   WebPApplyAlphaMultiply = ApplyAlphaMultiply_SSE2;
+  WebPClearTransparentRGB = ClearTransparentRGB_SSE2;
   WebPDispatchAlpha = DispatchAlpha_SSE2;
   WebPDispatchAlphaToGreen = DispatchAlphaToGreen_SSE2;
   WebPExtractAlpha = ExtractAlpha_SSE2;
