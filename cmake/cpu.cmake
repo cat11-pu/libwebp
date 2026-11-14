@@ -64,9 +64,9 @@ function(webp_check_compiler_flag WEBP_SIMD_FLAG ENABLE_SIMD)
 endfunction()
 
 # those are included in the names of WEBP_USE_* in c++ code.
-set(WEBP_SIMD_FLAGS "AVX2;SSE41;SSE2;MIPS32;MIPS_DSP_R2;NEON;MSA;VSX")
+set(WEBP_SIMD_FLAGS "AVX512;AVX2;SSE41;SSE2;MIPS32;MIPS_DSP_R2;NEON;MSA;VSX")
 set(WEBP_SIMD_FILE_EXTENSIONS
-    "_avx2.c;_sse41.c;_sse2.c;_mips32.c;_mips_dsp_r2.c;_neon.c;_msa.c;_vsx.c")
+    "_avx512.c;_avx2.c;_sse41.c;_sse2.c;_mips32.c;_mips_dsp_r2.c;_neon.c;_msa.c;_vsx.c")
 if(MSVC AND CMAKE_C_COMPILER_ID STREQUAL "MSVC")
   # With at least Visual Studio 12 (2013)+ /arch is not necessary to build SSE2
   # or SSE4 code unless a lesser /arch is forced. MSVC does not have a SSE4
@@ -76,11 +76,11 @@ if(MSVC AND CMAKE_C_COMPILER_ID STREQUAL "MSVC")
   if(MSVC_VERSION GREATER_EQUAL 1800 AND NOT CMAKE_C_FLAGS MATCHES "/arch:")
     set(SIMD_ENABLE_FLAGS)
   else()
-    set(SIMD_ENABLE_FLAGS "/arch:AVX2;/arch:AVX;/arch:SSE2;;;;;")
+    set(SIMD_ENABLE_FLAGS ";/arch:AVX2;/arch:AVX;/arch:SSE2;;;;;")
   endif()
 else()
   set(SIMD_ENABLE_FLAGS
-      "-mavx2;-msse4.1;-msse2;-mips32;-mdspr2;-mfpu=neon;-mmsa;-mvsx")
+      "-mavx512f -mavx512bw -mavx512vl;-mavx2;-msse4.1;-msse2;-mips32;-mdspr2;-mfpu=neon;-mmsa;-mvsx")
 endif()
 
 set(WEBP_SIMD_FILES_TO_INCLUDE)

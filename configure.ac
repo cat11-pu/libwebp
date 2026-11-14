@@ -181,6 +181,23 @@ AS_IF([test "x$enable_avx2" != "xno" -a "x$enable_sse4_1" != "xno" \
     CFLAGS=$SAVED_CFLAGS])
   AC_SUBST([AVX2_FLAGS])])
 
+AC_ARG_ENABLE([avx512],
+              AS_HELP_STRING([--disable-avx512],
+                             [Disable detection of AVX-512 support
+                              @<:@default=auto@:>@]))
+
+AS_IF([test "x$enable_avx512" != "xno" -a "x$enable_avx2" != "xno" \
+      -a "x$enable_sse4_1" != "xno" -a "x$enable_sse2" != "xno"], [
+  AVX512_FLAGS="$INTRINSICS_CFLAGS -mavx512f -mavx512bw -mavx512vl"
+  SAVED_CFLAGS=$CFLAGS
+  CFLAGS="$CFLAGS $AVX512_FLAGS"
+  AC_CHECK_HEADER([immintrin.h],
+                  [AC_DEFINE(WEBP_HAVE_AVX512, [1],
+                   [Set to 1 if AVX-512 F/BW/VL is supported])],
+                  [AVX512_FLAGS=""])
+  CFLAGS=$SAVED_CFLAGS
+  AC_SUBST([AVX512_FLAGS])])
+
 AC_ARG_ENABLE([sse4.1],
               AS_HELP_STRING([--disable-sse4.1],
                              [Disable detection of SSE4.1 support

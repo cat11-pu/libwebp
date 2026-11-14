@@ -215,48 +215,48 @@ GENERATE_PREDICTOR_ADD(VP8LPredictor13_C, PredictorAdd13_C)
 
 //------------------------------------------------------------------------------
 
-// Inverse prediction.
+// Inverse prediction for a single row. 'out - width' must contain the already
+// reconstructed previous row unless y == 0.
+static void PredictorInverseTransformRow_C(
+    const VP8LTransform* const transform, int y, const uint32_t* in,
+    uint32_t* out) {
+  const int width = transform->xsize;
+  if (y == 0) {  // First Row follows the L (mode=1) mode.
+    PredictorAdd0_C(in, NULL, 1, out);
+    PredictorAdd1_C(in + 1, NULL, width - 1, out + 1);
+    return;
+  }
+
+  {
+    const int tile_width = 1 << transform->bits;
+    const int mask = tile_width - 1;
+    const int tiles_per_row = VP8LSubSampleSize(width, transform->bits);
+    const uint32_t* pred_mode_src =
+        transform->data + (y >> transform->bits) * tiles_per_row;
+    int x = 1;
+    // First pixel follows the T (mode=2) mode.
+    PredictorAdd2_C(in, out - width, 1, out);
+    // .. the rest:
+    while (x < width) {
+      const VP8LPredictorAddSubFunc pred_func =
+          VP8LPredictorsAdd[((*pred_mode_src++) >> 8) & 0xf];
+      int x_end = (x & ~mask) + tile_width;
+      if (x_end > width) x_end = width;
+      pred_func(in + x, out + x - width, x_end - x, out + x);
+      x = x_end;
+    }
+  }
+}
+
 static void PredictorInverseTransform_C(const VP8LTransform* const transform,
                                         int y_start, int y_end,
                                         const uint32_t* in, uint32_t* out) {
   const int width = transform->xsize;
-  if (y_start == 0) {  // First Row follows the L (mode=1) mode.
-    PredictorAdd0_C(in, NULL, 1, out);
-    PredictorAdd1_C(in + 1, NULL, width - 1, out + 1);
+  int y;
+  for (y = y_start; y < y_end; ++y) {
+    PredictorInverseTransformRow_C(transform, y, in, out);
     in += width;
     out += width;
-    ++y_start;
-  }
-
-  {
-    int y = y_start;
-    const int tile_width = 1 << transform->bits;
-    const int mask = tile_width - 1;
-    const int tiles_per_row = VP8LSubSampleSize(width, transform->bits);
-    const uint32_t* pred_mode_base =
-        transform->data + (y >> transform->bits) * tiles_per_row;
-
-    while (y < y_end) {
-      const uint32_t* pred_mode_src = pred_mode_base;
-      int x = 1;
-      // First pixel follows the T (mode=2) mode.
-      PredictorAdd2_C(in, out - width, 1, out);
-      // .. the rest:
-      while (x < width) {
-        const VP8LPredictorAddSubFunc pred_func =
-            VP8LPredictorsAdd[((*pred_mode_src++) >> 8) & 0xf];
-        int x_end = (x & ~mask) + tile_width;
-        if (x_end > width) x_end = width;
-        pred_func(in + x, out + x - width, x_end - x, out + x);
-        x = x_end;
-      }
-      in += width;
-      out += width;
-      ++y;
-      if ((y & mask) == 0) {  // Use the same mask, since tiles are squares.
-        pred_mode_base += tiles_per_row;
-      }
-    }
   }
 }
 
@@ -305,39 +305,66 @@ void VP8LTransformColorInverse_C(const VP8LMultipliers* const m,
   }
 }
 
-// Color space inverse transform.
-static void ColorSpaceInverseTransform_C(const VP8LTransform* const transform,
-                                         int y_start, int y_end,
-                                         const uint32_t* src, uint32_t* dst) {
+// Color space inverse transform for a single row.
+static void ColorSpaceInverseTransformRow_C(
+    const VP8LTransform* const transform, int y, const uint32_t* src,
+    uint32_t* dst) {
   const int width = transform->xsize;
   const int tile_width = 1 << transform->bits;
   const int mask = tile_width - 1;
   const int safe_width = width & ~mask;
   const int remaining_width = width - safe_width;
   const int tiles_per_row = VP8LSubSampleSize(width, transform->bits);
-  int y = y_start;
-  const uint32_t* pred_row =
+  const uint32_t* pred =
       transform->data + (y >> transform->bits) * tiles_per_row;
+  VP8LMultipliers m = {0, 0, 0};
+  const uint32_t* const src_safe_end = src + safe_width;
+  const uint32_t* const src_end = src + width;
+  while (src < src_safe_end) {
+    ColorCodeToMultipliers(*pred++, &m);
+    VP8LTransformColorInverse(&m, src, tile_width, dst);
+    src += tile_width;
+    dst += tile_width;
+  }
+  if (src < src_end) {  // Left-overs using C-version.
+    ColorCodeToMultipliers(*pred++, &m);
+    VP8LTransformColorInverse(&m, src, remaining_width, dst);
+  }
+}
 
-  while (y < y_end) {
-    const uint32_t* pred = pred_row;
-    VP8LMultipliers m = {0, 0, 0};
-    const uint32_t* const src_safe_end = src + safe_width;
-    const uint32_t* const src_end = src + width;
-    while (src < src_safe_end) {
-      ColorCodeToMultipliers(*pred++, &m);
-      VP8LTransformColorInverse(&m, src, tile_width, dst);
-      src += tile_width;
-      dst += tile_width;
-    }
-    if (src < src_end) {  // Left-overs using C-version.
-      ColorCodeToMultipliers(*pred++, &m);
-      VP8LTransformColorInverse(&m, src, remaining_width, dst);
-      src += remaining_width;
-      dst += remaining_width;
-    }
-    ++y;
-    if ((y & mask) == 0) pred_row += tiles_per_row;
+static void ColorSpaceInverseTransform_C(const VP8LTransform* const transform,
+                                         int y_start, int y_end,
+                                         const uint32_t* src, uint32_t* dst) {
+  const int width = transform->xsize;
+  int y;
+  for (y = y_start; y < y_end; ++y) {
+    ColorSpaceInverseTransformRow_C(transform, y, src, dst);
+    src += width;
+    dst += width;
+  }
+}
+
+void VP8LInverseTransformPair(const VP8LTransform* const color,
+                              const VP8LTransform* const pred, int y_start,
+                              int y_end, const uint32_t* const in,
+                              uint32_t* const out, int copy_top) {
+  const int width = pred->xsize;
+  int y;
+  assert(color->xsize == width);
+  assert(color->type == CROSS_COLOR_TRANSFORM);
+  assert(pred->type == PREDICTOR_TRANSFORM);
+  for (y = y_start; y < y_end; ++y) {
+    uint32_t* const row = out + (ptrdiff_t)(y - y_start) * width;
+    ColorSpaceInverseTransformRow_C(
+        color, y, in + (ptrdiff_t)(y - y_start) * width, row);
+    // The predictor consumes the row in place; its top row is the previous
+    // final output row, so no full-image intermediate buffer is required.
+    PredictorInverseTransformRow_C(pred, y, row, row);
+  }
+  if (copy_top && y_end != pred->ysize) {
+    WEBP_UNSAFE_MEMCPY(
+        out - width, out + (ptrdiff_t)(y_end - y_start - 1) * width,
+        width * sizeof(*out));
   }
 }
 
@@ -632,6 +659,7 @@ extern VP8CPUInfo VP8GetCPUInfo;
 extern void VP8LDspInitSSE2(void);
 extern void VP8LDspInitSSE41(void);
 extern void VP8LDspInitAVX2(void);
+extern void VP8LDspInitAVX512(void);
 extern void VP8LDspInitNEON(void);
 extern void VP8LDspInitMIPSdspR2(void);
 extern void VP8LDspInitMSA(void);
@@ -688,6 +716,11 @@ WEBP_DSP_INIT_FUNC(VP8LDspInit) {
 #if defined(WEBP_HAVE_AVX2)
         if (VP8GetCPUInfo(kAVX2)) {
           VP8LDspInitAVX2();
+#if defined(WEBP_HAVE_AVX512)
+          if (VP8GetCPUInfo(kAVX512F)) {
+            VP8LDspInitAVX512();
+          }
+#endif
         }
 #endif
       }

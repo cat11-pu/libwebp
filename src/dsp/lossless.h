@@ -93,6 +93,15 @@ void VP8LInverseTransform(const struct VP8LTransform* const transform,
                           int row_start, int row_end, const uint32_t* const in,
                           uint32_t* const out);
 
+// Applies CROSS_COLOR followed by PREDICTOR one row at a time. The color
+// transform output feeds the predictor directly, keeping the intermediate row
+// in cache instead of writing and rereading a full image-sized buffer.
+void VP8LInverseTransformPair(const struct VP8LTransform* const color,
+                              const struct VP8LTransform* const pred,
+                              int row_start, int row_end,
+                              const uint32_t* const in, uint32_t* const out,
+                              int copy_top);
+
 // Color space conversion.
 typedef void (*VP8LConvertFunc)(const uint32_t* WEBP_RESTRICT src,
                                 int num_pixels, uint8_t* WEBP_RESTRICT dst);

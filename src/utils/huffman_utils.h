@@ -77,6 +77,8 @@ WEBP_NODISCARD int VP8LHuffmanTablesEnsureCapacity(
 
 #define HUFFMAN_PACKED_BITS 6
 #define HUFFMAN_PACKED_TABLE_SIZE (1u << HUFFMAN_PACKED_BITS)
+#define HUFFMAN_RB_BITS 12
+#define HUFFMAN_RB_TABLE_SIZE (1u << HUFFMAN_RB_BITS)
 
 // Huffman table group.
 // Includes special handling for the following cases:
@@ -96,6 +98,8 @@ struct HTreeGroup {
   int is_trivial_code;     // true if is_trivial_literal with only one code
   // table mapping input bits to a packed values, or escape case to literal code
   HuffmanCode32* packed_table;
+  // Combined RED/BLUE lookup: bits in the high byte, symbols in the low bytes.
+  uint32_t* packed_rb_table;
 };
 
 // Creates the instance of HTreeGroup with specified number of tree-groups.

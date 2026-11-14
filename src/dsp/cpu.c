@@ -164,6 +164,15 @@ static int x86CPUInfo(CPUFeature feature) {
       return !!(cpu_info[1] & (1 << 5));
     }
   }
+  if (feature == kAVX512F) {
+    // AVX-512 Foundation plus BW and VL; the OS must enable ZMM and opmask
+    // state (XCR0 bits 5, 6 and 7).
+    if (x86CPUInfo(kAVX) && max_cpuid_value >= 7 &&
+        (xgetbv() & 0xe6) == 0xe6) {
+      GetCPUInfo(cpu_info, 7);
+      return !!(cpu_info[1] & ((1 << 16) | (1 << 30) | (1U << 31)));
+    }
+  }
   return 0;
 }
 WEBP_EXTERN VP8CPUInfo VP8GetCPUInfo;

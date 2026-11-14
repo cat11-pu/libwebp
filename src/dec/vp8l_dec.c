@@ -260,6 +260,45 @@ static int BuildPackedTable(HTreeGroup* const htree_group,
   return 1;
 }
 
+// Combined RED/BLUE table. Each entry stores the number of consumed bits in
+// the high byte and the two channel values in the low bytes. A zero entry
+// means the prefix needs a second-level Huffman lookup.
+static int BuildPackedRBTable(HTreeGroup* const htree_group,
+                              HuffmanTables* const huffman_tables) {
+  const int total_size = HUFFMAN_RB_TABLE_SIZE *
+                         sizeof(*htree_group->packed_rb_table) /
+                         sizeof(*huffman_tables->curr_segment->curr_table);
+  if (!VP8LHuffmanTablesEnsureCapacity(total_size, huffman_tables)) return 0;
+  htree_group->packed_rb_table =
+      (uint32_t*)huffman_tables->curr_segment->curr_table;
+  huffman_tables->curr_segment->curr_table += total_size;
+  for (uint32_t code = 0; code < HUFFMAN_RB_TABLE_SIZE; ++code) {
+    uint32_t bits = code;
+    const HuffmanCode* hcode =
+        &htree_group->htrees[RED][bits & HUFFMAN_TABLE_MASK];
+    int nbits;
+    uint32_t value;
+    if (hcode->bits > HUFFMAN_TABLE_BITS) {
+      htree_group->packed_rb_table[code] = 0;
+      continue;
+    }
+    value = (uint32_t)hcode->value << 8;
+    nbits = hcode->bits;
+    bits >>= hcode->bits;
+    hcode = &htree_group->htrees[BLUE][bits & HUFFMAN_TABLE_MASK];
+    if (hcode->bits > HUFFMAN_TABLE_BITS ||
+        nbits + hcode->bits > HUFFMAN_RB_BITS) {
+      htree_group->packed_rb_table[code] = 0;
+      continue;
+    }
+    nbits += hcode->bits;
+    value |= hcode->value;
+    htree_group->packed_rb_table[code] =
+        (nbits == 0) ? 0 : value | ((uint32_t)nbits << 16);
+  }
+  return 1;
+}
+
 WEBP_NODISCARD static int ReadHuffmanCodeLengths(
     VP8LDecoder* const dec, const int* const code_length_code_lengths,
     int num_symbols, int* const code_lengths) {
@@ -587,8 +626,15 @@ int ReadHuffmanCodesHelper(int color_cache_bits, int num_htree_groups,
         }
       }
       htree_group->packed_table = NULL;
+      htree_group->packed_rb_table = NULL;
       if (!htree_group->is_trivial_code && (max_bits < HUFFMAN_PACKED_BITS) &&
           !BuildPackedTable(htree_group, huffman_tables)) {
+        VP8LSetError(dec, VP8_STATUS_OUT_OF_MEMORY);
+        goto Error;
+      }
+      if (!htree_group->is_trivial_code &&
+          num_htree_groups <= 64 &&
+          !BuildPackedRBTable(htree_group, huffman_tables)) {
         VP8LSetError(dec, VP8_STATUS_OUT_OF_MEMORY);
         goto Error;
       }
@@ -918,10 +964,21 @@ static void ApplyInverseTransforms(VP8LDecoder* const dec, int start_row,
   uint32_t* const rows_out = dec->argb_cache;
 
   // Inverse transforms.
-  while (n-- > 0) {
-    VP8LTransform* const transform = &dec->transforms[n];
-    VP8LInverseTransform(transform, start_row, end_row, rows_in, rows_out);
-    rows_in = rows_out;
+  while (n > 0) {
+    if (n >= 2 &&
+        dec->transforms[n - 2].type == PREDICTOR_TRANSFORM &&
+        dec->transforms[n - 1].type == CROSS_COLOR_TRANSFORM) {
+      VP8LInverseTransformPair(
+          &dec->transforms[n - 1], &dec->transforms[n - 2], start_row,
+          end_row, rows_in, rows_out, 1);
+      rows_in = rows_out;
+      n -= 2;
+    } else {
+      VP8LTransform* const transform = &dec->transforms[n - 1];
+      VP8LInverseTransform(transform, start_row, end_row, rows_in, rows_out);
+      rows_in = rows_out;
+      --n;
+    }
   }
   if (rows_in != rows_out) {
     // No transform called, hence just copy.
@@ -981,18 +1038,43 @@ static void ProcessRows(VP8LDecoder* const dec, int row,
   assert(num_rows <= NUM_ARGB_CACHE_ROWS);
   if (num_rows > 0) {  // Emit output.
     VP8Io* const io = dec->io;
+    const WebPDecBuffer* const output = dec->output;
     uint8_t* rows_data = (uint8_t*)dec->argb_cache;
     const int in_stride = io->width * sizeof(uint32_t);  // in unit of RGBA
-    ApplyInverseTransforms(dec, dec->last_row, num_rows, rows);
+    int direct_bgra = 0;
+    if (dec->next_transform == 2 &&
+        dec->transforms[0].type == PREDICTOR_TRANSFORM &&
+        dec->transforms[1].type == CROSS_COLOR_TRANSFORM &&
+        WebPIsRGBMode(output->colorspace) &&
+        output->colorspace == MODE_BGRA && !io->use_scaling &&
+        io->crop_left == 0 && io->crop_right == dec->width &&
+        output->u.RGBA.rgba != NULL &&
+        output->u.RGBA.stride == dec->width * (int)sizeof(uint32_t)
+#if defined(WORDS_BIGENDIAN)
+        && 0
+#endif
+    ) {
+      direct_bgra = 1;
+    }
+    if (direct_bgra) {
+      uint8_t* const rgba =
+          output->u.RGBA.rgba +
+          (ptrdiff_t)dec->last_out_row * output->u.RGBA.stride;
+      VP8LInverseTransformPair(
+          &dec->transforms[1], &dec->transforms[0], dec->last_row, row,
+          rows, (uint32_t*)rgba, /*copy_top=*/0);
+    } else {
+      ApplyInverseTransforms(dec, dec->last_row, num_rows, rows);
+    }
     if (!SetCropWindow(io, dec->last_row, row, &rows_data, in_stride)) {
       // Nothing to output (this time).
     } else {
-      const WebPDecBuffer* const output = dec->output;
       if (WebPIsRGBMode(output->colorspace)) {  // convert to RGBA
         const WebPRGBABuffer* const buf = &output->u.RGBA;
         uint8_t* const rgba =
             buf->rgba + (ptrdiff_t)dec->last_out_row * buf->stride;
         const int num_rows_out =
+            direct_bgra ? io->mb_h :
 #if !defined(WEBP_REDUCE_SIZE)
             io->use_scaling ? EmitRescaledRowsRGBA(dec, rows_data, in_stride,
                                                    io->mb_h, rgba, buf->stride)
@@ -1451,6 +1533,20 @@ static WEBP_ALWAYS_INLINE void DecodeLiterals(
   const uint32_t* fast_end = src + (max_col - col);
   VP8LBitReader lbr = *br;  // Local copy keeps bit-reader state in registers.
   if (fast_end >= src_last) fast_end = src_last - 1;
+  const uint32_t* WEBP_RESTRICT const packed_rb =
+      htree_group->packed_rb_table;
+  const HuffmanCode* const alpha_tree = htree_group->htrees[ALPHA];
+  const int alpha_is_trivial = (alpha_tree[0].bits == 0);
+  const uint32_t alpha_value =
+      alpha_is_trivial ? (uint32_t)alpha_tree[0].value << 24 : 0;
+  const HuffmanCode* WEBP_RESTRICT const green_table =
+      htree_group->htrees[GREEN];
+  const HuffmanCode* WEBP_RESTRICT const red_table =
+      htree_group->htrees[RED];
+  const HuffmanCode* WEBP_RESTRICT const blue_table =
+      htree_group->htrees[BLUE];
+  const int fast_eligible =
+      htree_group->packed_table == NULL && alpha_is_trivial;
   for (;;) {
     // 'code' holds the literal's GREEN channel (0..255); read RED, BLUE, ALPHA.
     const int red = ReadSymbol(htree_group->htrees[RED], &lbr);
@@ -1461,6 +1557,68 @@ static WEBP_ALWAYS_INLINE void DecodeLiterals(
     if (VP8LIsEndOfStream(&lbr)) break;
     *src = ((uint32_t)alpha << 24) | (red << 16) | (code << 8) | blue;
     if (src >= fast_end) break;
+    // With a constant alpha, GREEN needs one lookup and RED/BLUE are resolved
+    // together from a 12-bit table. This avoids two more table walks and bit
+    // reader updates for the common photographic literal stream.
+    if (packed_rb != NULL && alpha_is_trivial) {
+      while (1) {
+        const HuffmanCode* hcode;
+        uint32_t rb_entry;
+        int total_bits;
+        VP8LFillBitWindow(&lbr);
+        if (lbr.eos) goto literals_done;
+        bit_pos = lbr.bit_pos;
+        {
+          const uint32_t val = VP8LPrefetchBits(&lbr);
+          hcode = &green_table[val & HUFFMAN_TABLE_MASK];
+          if (hcode->bits > HUFFMAN_TABLE_BITS ||
+              hcode->value >= NUM_LITERAL_CODES) {
+            break;
+          }
+          rb_entry =
+              packed_rb[(val >> hcode->bits) & (HUFFMAN_RB_TABLE_SIZE - 1)];
+          if (rb_entry == 0) break;
+          total_bits = hcode->bits + (int)(rb_entry >> 16);
+          src[1] = alpha_value | ((rb_entry & 0xff00u) << 8) |
+                   ((uint32_t)hcode->value << 8) | (rb_entry & 0xffu);
+        }
+        lbr.bit_pos = bit_pos + total_bits;
+        ++src;
+        if (VP8LIsEndOfStream(&lbr) || src >= fast_end) goto literals_done;
+      }
+    }
+    // Speculative fast path for a three-channel 8-bit code. A mismatch leaves
+    // the bit position untouched.
+    while (fast_eligible) {
+      int saved_pos;
+      uint32_t peek;
+      HuffmanCode hg;
+      VP8LFillBitWindow(&lbr);
+      saved_pos = lbr.bit_pos;
+      if (lbr.eos || saved_pos > VP8L_LBITS - 3 * HUFFMAN_TABLE_BITS) break;
+      peek = VP8LPrefetchBits(&lbr);
+      hg = green_table[peek & HUFFMAN_TABLE_MASK];
+      if (hg.bits != HUFFMAN_TABLE_BITS ||
+          hg.value >= NUM_LITERAL_CODES) {
+        break;
+      }
+      {
+        const HuffmanCode hr =
+            red_table[(peek >> HUFFMAN_TABLE_BITS) & HUFFMAN_TABLE_MASK];
+        if (hr.bits != HUFFMAN_TABLE_BITS) break;
+        {
+          const HuffmanCode hb =
+              blue_table[(peek >> (2 * HUFFMAN_TABLE_BITS)) &
+                         HUFFMAN_TABLE_MASK];
+          if (hb.bits != HUFFMAN_TABLE_BITS) break;
+          src[1] = alpha_value | ((uint32_t)hr.value << 16) |
+                   ((uint32_t)hg.value << 8) | hb.value;
+          lbr.bit_pos = saved_pos + 3 * HUFFMAN_TABLE_BITS;
+          ++src;
+          if (src >= fast_end) goto literals_done;
+        }
+      }
+    }
     // Peek at the next symbol: if it's another literal (code < 256), stay in
     // this tight loop; otherwise rewind bit_pos so the outer loop handles it.
     VP8LFillBitWindow(&lbr);
@@ -1472,6 +1630,7 @@ static WEBP_ALWAYS_INLINE void DecodeLiterals(
     }
     ++src;
   }
+literals_done:
   *br = lbr;
   *col_ptr = col + (int)(src - *src_ptr);
   *src_ptr = src;

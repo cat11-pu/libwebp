@@ -92,6 +92,16 @@
 #define WEBP_HAVE_AVX2
 #endif
 
+#if (defined(__AVX512F__) && defined(__AVX512BW__) && \
+     defined(__AVX512VL__)) &&                         \
+    (!defined(HAVE_CONFIG_H) || defined(WEBP_HAVE_AVX512))
+#define WEBP_USE_AVX512
+#endif
+
+#if defined(WEBP_USE_AVX512) && !defined(WEBP_HAVE_AVX512)
+#define WEBP_HAVE_AVX512
+#endif
+
 #if defined(WEBP_MSC_AVX2) && _MSC_VER <= 1900
 #include <immintrin.h>
 
@@ -317,6 +327,7 @@ typedef enum {
   kSSE4_1,
   kAVX,
   kAVX2,
+  kAVX512F,
   kNEON,
   kMIPS32,
   kMIPSdspR2,
